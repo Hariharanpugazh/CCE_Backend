@@ -966,7 +966,8 @@ def toggle_auto_approval(request):
     if error_response:
         return error_response
     
-    if decoded_token.get('role') != "superadmin":
+    superadmin_user = decoded_token.get('superadmin_user')  # Extract superadmin_user from token
+    if not superadmin_user:
         return JsonResponse({'error': 'Unauthorized access'}, status=403)
     
     try:
@@ -975,14 +976,14 @@ def toggle_auto_approval(request):
 
         # Save or update the setting in MongoDB
         superadmin_collection.update_one(
-            {"key": "auto_approval"},
+            {"admin_id": superadmin_user},  # Ensuring it updates per superadmin user
             {"$set": {"value": is_auto_approval}},
             upsert=True
         )
 
         return JsonResponse({"message": "Auto-approval setting updated successfully"}, status=200)
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+        return JsonResponse({'error': f'Error in updating auto-approval: {str(e)}'}, status=500)
 
 @csrf_exempt
 @api_view(["GET"])
@@ -994,15 +995,16 @@ def get_auto_approval_status(request):
     if error_response:
         return error_response
     
-    if decoded_token.get('role') != "superadmin":
+    superadmin_user = decoded_token.get('superadmin_user')  # Extract superadmin_user from token
+    if not superadmin_user:
         return JsonResponse({'error': 'Unauthorized access'}, status=403)
     
     try:
-        auto_approval_setting = superadmin_collection.find_one({"key": "auto_approval"})
+        auto_approval_setting = superadmin_collection.find_one({"admin_id": superadmin_user})
         is_auto_approval = auto_approval_setting.get("value", False) if auto_approval_setting else False
         return JsonResponse({"is_auto_approval": is_auto_approval}, status=200)
     except Exception as e:
-        return JsonResponse({'error': str(e)}, status=500)
+        return JsonResponse({'error': f'Error fetching auto-approval status: {str(e)}'}, status=500)
 
 @csrf_exempt
 def review_job(request, job_id):
