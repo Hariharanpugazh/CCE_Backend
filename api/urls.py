@@ -1,6 +1,7 @@
 from django.urls import path
 from .views import *
 from .admin_views import *
+from .message import * 
 
 urlpatterns = [
   
@@ -21,6 +22,9 @@ urlpatterns = [
     path('fetch-review/', fetch_review, name='fetch_review'),
     path('get-admin/<str:userId>/', get_admin_details, name='get_admin_details'),
     path('update-admin/<str:userId>/', update_admin_profile, name='update_admin_profile'),
+    path("get-categories/", get_categories, name="get_categories"),
+    path('topics-by-category/', get_topics_by_category, name='get_topics_by_category'),
+    path('materials-by-topic/', get_materials_by_topic, name='get_materials_by_topic'),
     
     #superadmin
     path("superadmin_signup/",super_admin_signup,name= "super_admin_signup"),
@@ -37,6 +41,10 @@ urlpatterns = [
     path("get_internships_with_admin/", get_internships_with_admin, name="get_internships_with_admin"),
     path("get_study_materials_with_admin/", get_study_materials_with_admin, name="get_study_materials_with_admin"),
     path("get_student_achievements_with_students/", get_student_achievements, name="get_student_achievements_with_students"),
+    path('all-jobs-internships/', get_all_jobs_and_internships, name='all_jobs_internships'),
+    path('mark_messages_as_seen/<str:student_id>/', mark_messages_as_seen_by_admin, name='mark_messages_as_seen'),
+    
+
     
     #account management 
     path('students/', get_students, name='get_students'),
@@ -54,6 +62,7 @@ urlpatterns = [
     
     #Jobs
     path('jobs', get_jobs_for_mail, name='get_jobs'),
+    path('upload_job_image/', upload_job_image, name='upload_job_image'),
     path("review-job/<str:job_id>/", review_job, name="approve_job"),
     path('job/<str:job_id>/', get_job_by_id, name='get_job_by_id'),
     path('job-edit/<str:job_id>/', update_job, name='update_job'),
@@ -70,7 +79,7 @@ urlpatterns = [
     path('achievements/', get_achievements, name='get_achievements'),
     path('edit-achievement/<str:achievement_id>/', update_achievement, name='edit-achievement'),
     path('delete-achievement/<str:achievement_id>/', delete_achievement, name='delete_achievement'),
-
+    path("achievement/<str:achievement_id>/",get_achievement_by_id,name="get_achievement_by_id"),
     # path('review-achievement/<str:achievement_id>/', review_achievement, name='review_achievement'),
     path('published-achievement/', get_published_achievements, name='get_published_achievements'),
     path('get-achievement/<str:achievement_id>/', achievement_detail, name='achievement_detail'),
@@ -79,6 +88,7 @@ urlpatterns = [
     #Internships
     path('internship/', get_internships, name='get_internship'),
     path('review-internship/<str:internship_id>/', review_internship, name='review_internship'),
+    path("upload-internship-image/", upload_internship_image, name="upload_internship_image"),
     path('internship/<str:internship_id>/', get_internship_id, name='get_internship'),
     path('internship-edit/<str:internship_id>/', update_internship, name='update_internship'),
     path('internship-delete/<str:internship_id>/', delete_internship, name='delete_internship'),
@@ -96,11 +106,12 @@ urlpatterns = [
     path('student-reset-password/', student_reset_password, name='student_reset_password'),
     path('published-jobs/', get_published_jobs, name='get_published_jobs'),
     path('published-internship/', get_published_internships, name='get_published_internships'),
-    path("contact-us/",contact_us,name="contact-us"),
+    # path("contact-us/",contact_us,name="contact-us"),
     path("save-job/<str:pk>/", save_job, name="save-job"),
     path("unsave-job/<str:pk>/", unsave_job, name="unsave-job"),
     path("saved-jobs/<str:user_id>/", get_saved_jobs, name="get-saved-jobs"),
-    path("get_student_messages/", get_student_messages, name="get_student_messages"),
+    # path("get_student_messages/", get_student_messages, name="get_student_messages"),
+    path("mark_messages_as_seen_by_student/<str:student_id>/", mark_messages_as_seen_by_student, name="mark_messages_as_seen"),
 
 
     #study_material
@@ -108,4 +119,19 @@ urlpatterns = [
     path("study-material-edit/<str:study_material_id>/", update_study_material, name="update_study_material"),
     path("study-material-delete/<str:study_material_id>/", delete_study_material, name="delete_study_material"),
     path("all-study-material/", get_all_study_material, name="get_all_study_material"),
+    path("get-categories/", get_categories, name="get_categories"),
+    
+
+    #contact-us
+    path('contact-us/', contact_us, name='contact_us'),
+    path("get_student_messages/<student_id>/", get_student_messages, name="get_student_messages"),
+    path('student_send_message/', student_send_message, name='student_send_message'),
+    path('get_all_student_chats/', get_all_student_chats, name='get_all_student_chats'),
+    path('admin_reply_message/', admin_reply_message, name='admin_reply_message'),
+
+    #test
+    path("test_job_post/", test_job_post, name="test_job_post"),
+
+    #view count
+     path('viewcount/<str:id>/', view_count, name='view_count'),
 ]

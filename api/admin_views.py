@@ -22,6 +22,11 @@ import string
 import smtplib
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
+import pytesseract
+import cv2
+import numpy as np
+import google.generativeai as genai
+from PIL import Image, ImageEnhance, ImageFilter
 
 # Create your views here.
 JWT_SECRET = "secret"
@@ -72,6 +77,7 @@ reviews_collection = db['reviews']
 study_material_collection = db['studyMaterial']
 contactus_collection = db["contact_us"]
 student_achievement_collection=db["student_achievement"]
+message_collection = db["message"]
 
 # Dictionary to track failed login attempts
 failed_login_attempts = {}
@@ -155,7 +161,7 @@ def admin_signup(request):
                 'password': hashed_password,
                 'department': department,  # Store department
                 'college_name': college_name,  # Store college name
-                'status': 'active',  # Default status is active
+                'status': 'Active',  # Default status is Active
                 'created_at': datetime.now(),  # Store account creation date
                 'last_login': None  # Initially, no last login
             }
@@ -202,8 +208,8 @@ def admin_login(request):
             if admin_user is None:
                 return JsonResponse({'error': 'Account not found with this email id'}, status=404)
 
-            # Check if the account is active
-            if not admin_user.get('status', 'active') == 'active':
+            # Check if the account is Active
+            if not admin_user.get('status', 'Active') == 'Active':
                 return JsonResponse({'error': 'Admin account is deactivated. Please contact support.'}, status=403)
 
             if check_password(password, admin_user['password']):
@@ -365,32 +371,47 @@ def admin_details(request, id):
             admin['_id'] = str(admin['_id'])
 
             last_login = admin.get('last_login')
-            if last_login:
-                last_login = last_login.strftime('%Y-%m-%d %H:%M:%S')
-            else:
-                last_login = "Never logged in"
+            last_login = last_login.strftime('%Y-%m-%d %H:%M:%S') if last_login else "Never logged in"
 
             admin_data = {
                 '_id': admin['_id'],
                 'name': admin.get('name', 'N/A'),
                 'email': admin.get('email', 'N/A'),
-                'status': admin.get('status', 'active'),
+                'status': admin.get('status', 'Active'),
                 'department': admin.get('department', 'N/A'),
                 'college_name': admin.get('college_name', 'N/A'),
                 'created_at': datetime.now(),
                 'last_login': last_login
             }
 
+            # Fetch jobs posted by this admin
             jobs = job_collection.find({'admin_id': str(admin['_id'])})
             jobs_list = []
             for job in jobs:
                 job['_id'] = str(job['_id'])
                 job_data = job.get('job_data', {})
                 job_data['_id'] = job['_id']
-                job_data['updated_at'] = job.get('updated_at')  # Include updated_at field
+                job_data['updated_at'] = job.get('updated_at', "N/A")  # Include updated_at field
                 jobs_list.append(job_data)
 
-            return JsonResponse({'admin': admin_data, 'jobs': jobs_list}, status=200)
+            # Fetch internships posted by this admin
+            internships = internship_collection.find({'admin_id': str(admin['_id'])})
+            internships_list = []
+            for internship in internships:
+                internship['_id'] = str(internship['_id'])
+                internship_data = internship.get('internship_data', {})
+                internship_data['_id'] = internship['_id']
+                internship_data['updated_at'] = internship.get('updated_at', "N/A")
+                internships_list.append(internship_data)
+
+            # Fetch achievements posted by this admin
+            achievements = achievement_collection.find({'admin_id': str(admin['_id'])})
+            achievements_list = []
+            for achievement in achievements:
+                achievement['_id'] = str(achievement['_id'])
+                achievements_list.append(achievement)
+
+            return JsonResponse({'admin': admin_data, 'jobs': jobs_list, 'internships': internships_list, 'achievements': achievements_list}, status=200)
 
         except Exception as e:
             return JsonResponse({'error': f'An error occurred: {str(e)}'}, status=400)
@@ -435,7 +456,7 @@ def admin_status_update(request, id):
             data = json.loads(request.body)
             new_status = data.get("status")
 
-            if new_status not in ["active", "Inactive"]:
+            if new_status not in ["Active", "Inactive"]:
                 return JsonResponse({'error': 'Invalid status value'}, status=400)
 
             update_result = admin_collection.update_one({'_id': ObjectId(id)}, {'$set': {'status': new_status}})
@@ -550,13 +571,257 @@ def super_admin_login(request):
 
     
 # ============================================================== JOBS ======================================================================================
+#  Configure Gemini API
+genai.configure(api_key="AIzaSyCLDQgKnO55UQrnFsL2d79fxanIn_AL0WA")
+
+# Configure Tesseract (Ensure Tesseract is installed)
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+def preprocess_image(image):
+    """Preprocesses the image for better OCR accuracy."""
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)  # Convert to grayscale
+    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)  # Binarization
+    return thresh
+
+def extract_text_from_image(image_path):
+    """Extracts text by splitting the image into 4 parts and merging results."""
+    image = cv2.imread(image_path)  # Load image
+    processed_image = preprocess_image(image)  # Preprocess
+
+    height, width = processed_image.shape
+    parts = [
+        processed_image[0:height//2, 0:width//2],  # Top Left
+        processed_image[0:height//2, width//2:width],  # Top Right
+        processed_image[height//2:height, 0:width//2],  # Bottom Left
+        processed_image[height//2:height, width//2:width],  # Bottom Right
+    ]
+
+    extracted_text = []
+    
+    for i, part in enumerate(parts):
+        text = pytesseract.image_to_string(part, lang="eng")  # OCR on each part
+        extracted_text.append(text.strip())
+
+    return "\n".join(extracted_text)  # Merge extracted texts
+
+def analyze_text_with_gemini_api(ocr_text):
+
+    """Processes extracted text into a structured paragraph before extracting job details in JSON format."""
+
+    # Step 1: Generate Structured Paragraph from OCR Text
+    initial_prompt = f"""
+    You are an AI assistant specializing in job data extraction.
+    Convert the following unstructured job posting text into a structured, well-formatted paragraph.
+    The paragraph should be organized into subtopics like **Job Title, Company, Description, Responsibilities, Skills, Education, Experience, Salary, Benefits, Work Type, and Application Process**.
+
+    **Unstructured Job Posting:**  
+    {ocr_text}
+
+    **Example Output Format:**  
+    **Job Title:** [Extracted or 'No Data Available']  
+    **Company:** [Extracted or 'No Data Available']  
+    **Description:** [Extracted or 'No Data Available']  
+    **Responsibilities:**  
+    - Responsibility 1  
+    - Responsibility 2 (Infer if missing)  
+    **Required Skills:**  
+    - Skill 1  
+    - Skill 2 (Infer if missing)  
+    **Education:** [Extracted Qualification or 'No Data Available']  
+    **Experience:** [Years of experience required or 'No Data Available']  
+    **Salary:** [Extracted salary or 'No Data Available']  
+    **Benefits:**  
+    - Benefit 1  
+    - Benefit 2 (Infer if missing)  
+    **Work Type:** [Full-time/Part-time/Remote]  
+    **Application Process:** [Extracted Process or 'No Data Available']  
+
+    Ensure the output is well-structured and formatted properly.
+    """
+
+    # Call Gemini AI Model
+    model = genai.GenerativeModel("gemini-1.5-flash-8b")
+    structured_paragraph = model.generate_content(initial_prompt).text
+
+
+    main_prompt = f"""
+    Extract job posting details from the following structured text and return the output in a strict JSON format.
+
+    **Structured Job Posting:**  
+    {structured_paragraph}
+
+
+    **Output Format (Ensure All Fields Exist & Fill Missing Ones)**:
+    {{
+        "title": "Extracted Job Title or 'No Data Available'",
+        "company_name": "Extracted Company Name or 'No Data Available'",
+        "company_overview": "Extracted or 'No Data Available'",
+        "company_website": "Extracted Website or 'No Data Available'",
+        "job_description": "Extracted Job Description or 'No Data Available'",
+        "key_responsibilities": [
+            "Responsibility 1",
+            "Responsibility 2",
+            "Infer if missing"
+        ],
+        "required_skills": [
+            "Skill 1",
+            "Skill 2",
+            "Infer if missing"
+        ],
+        "education_requirements": "Extracted Qualification or 'No Data Available'",
+        "experience_level": "Years of experience required or 'No Data Available'",
+        "salary_range": "Extracted salary or 'No Data Available'",
+        "benefits": [
+            "Benefit 1",
+            "Benefit 2",
+            "Infer if missing"
+        ],
+        "job_location": "Extracted location or 'No Data Available'",
+        "work_type": "Full-time/Part-time (Infer from job type)",
+        "application_instructions": "Extracted Application Process or 'No Data Available'",
+        "application_deadline": "YYYY-MM-DD or 'No Data Available'",
+        "contact_email": "Extracted email or 'No Data Available'",
+        "contact_phone": ["Extracted phone number or 'No Data Available'"],
+        "job_link": "Extracted job link or 'No Data Available'",
+        "selectedCategory": "Job Category (Infer from job type)",
+        "selectedWorkType": "On-site/Remote"
+    }}
+
+    **Ensure output is valid JSON with no additional text.**
+"""
+    # Generate structured job details JSON
+    response = model.generate_content(main_prompt).text
+
+    # Ensure response contains JSON
+    try:
+        # **Clean AI response (remove Markdown formatting)**
+        cleaned_response = re.sub(r"```json|```", "", response.text).strip()
+        json_output = json.loads(cleaned_response)  # Convert to JSON
+
+        # Ensure all required fields have values (fallback to "No Data Available")
+        required_fields = {
+            "title": "No Data Available",
+            "company_name": "No Data Available",
+            "job_link": "No Data Available",
+            "contact_email": "No Data Available",
+            "contact_phone": ["No Data Available"]
+        }
+
+        for key, default_value in required_fields.items():
+            if key not in json_output or not json_output[key]:
+                json_output[key] = default_value
+
+        return json_output
+
+    except json.JSONDecodeError as e:
+        return {"error": "AI processing failed. Please try again."}
+
+@csrf_exempt
+def upload_job_image(request):
+    """Handles job image uploads, extracts text using OCR, and refines it using AI."""
+    if request.method == "POST":
+        try:
+            job_image = request.FILES.get("image")
+            if not job_image:
+                return JsonResponse({"error": "No image provided"}, status=400)
+
+            # Step 1: Extract raw text
+            raw_text = extract_text_from_image(Image.open(job_image)) 
+
+            # Step 2: Process AI enhancement
+            job_data = analyze_text_with_gemini_api(raw_text)
+
+            if "error" in job_data:
+                return JsonResponse({"error": "AI processing failed. Please try again."}, status=500)
+
+            return JsonResponse({"message": "Text extracted successfully", "data": job_data}, status=200)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Invalid request method"}, status=405)
     
 @csrf_exempt
-@api_view(["POST"])
 def job_post(request):
+    if request.method == 'POST':
+        try:
+            data = json.loads(request.POST.get('data', '{}'))  # Extracting JSON data
+            image = request.FILES.get('image')
+            
+            role = data.get('role')
+            userid = data.get('userId')
+            auto_approval_setting = superadmin_collection.find_one({"key": "auto_approval"})
+            is_auto_approval = auto_approval_setting.get("value", False) if auto_approval_setting else False
+            is_publish = True if role == 'superadmin' or (role == 'admin' and is_auto_approval) else None
+            
+            application_deadline_str = data.get('application_deadline')
+            if not application_deadline_str:
+                return JsonResponse({"error": "Missing required field: application_deadline"}, status=400)
+            
+            try:
+                application_deadline = datetime.strptime(application_deadline_str, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            except ValueError:
+                return JsonResponse({"error": "Invalid date format for application_deadline. Use YYYY-MM-DD."}, status=400)
+            
+            now = datetime.now(timezone.utc)
+            current_status = "Active" if application_deadline >= now else "Expired"
+            
+            required_fields = ['title', 'job_link', 'application_deadline', 'company_name']
+            for field in required_fields:
+                if field not in data:
+                    return JsonResponse({"error": f"Missing required field: {field}"}, status=400)
+            
+            # Convert image to Base64 if provided
+            image_base64 = None
+            if image:
+                image_base64 = base64.b64encode(image.read()).decode('utf-8')
+            
+            job_post = {
+                "job_data": {
+                    "title": data['title'],
+                    "company_name": data['company_name'],
+                    "company_overview": data.get('company_overview', "NA"),
+                    "company_website": data.get('company_website', "NA"),
+                    "job_description": data.get('job_description', "NA"),
+                    "key_responsibilities": data.get('key_responsibilities', "NA"),
+                    "required_skills": data.get('required_skills', ""),
+                    "education_requirements": data.get('education_requirements', "NA"),
+                    "experience_level": data.get('experience_level', "NA"),
+                    "salary_range": data.get('salary_range', "NA"),
+                    "benefits": data.get('benefits', "NA"),
+                    "job_location": data.get('job_location', "NA"),
+                    "work_type": data.get('work_type', "NA"),
+                    "work_schedule": data.get('work_schedule', "NA"),
+                    "application_instructions": data.get('application_instructions', "NA"),
+                    "application_deadline": application_deadline,
+                    "contact_email": data.get('contact_email', "NA"),
+                    "contact_phone": data.get('contact_phone', "NA"),
+                    "job_link": data['job_link'],
+                    "selectedCategory": data.get('selectedCategory', "NA"),
+                    "selectedWorkType": data.get('selectedWorkType', "NA"),
+                    "image": image_base64  # Storing image as Base64
+                },
+                "admin_id" if role == "admin" else "superadmin_id": userid,
+                "is_publish": is_publish,
+                "status": current_status,
+                "updated_at": datetime.now(timezone.utc)
+            }
+            
+            job_collection.insert_one(job_post)
+            return JsonResponse({"message": "Job posted successfully, awaiting approval."}, status=200)
+        
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    
+    return JsonResponse({"error": "Invalid request method. Only POST is allowed."}, status=405)
+
+
+@csrf_exempt
+@api_view(["POST"])
+def test_job_post(request):
     try:
         data = json.loads(request.body)
-    
+
         role = data.get('role')
         print(role)
         auto_approval_setting = superadmin_collection.find_one({"key": "auto_approval"})
@@ -568,55 +833,43 @@ def job_post(request):
         if not userid:
             return Response({"error": "Userid not found"}, status=status.HTTP_401_UNAUTHORIZED)
 
-        if role == 'admin':            
+        if role == 'admin':
             if is_auto_approval:
                 is_publish = True  # Auto-approve enabled, mark as approved
 
         elif role == 'superadmin':
- 
             is_publish = True  # Superadmin posts are always approved
 
-        data = json.loads(request.body)
+        # Replace null values with 'N/A'
+        def replace_nulls(d):
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    replace_nulls(v)
+                elif v is None:
+                    d[k] = 'N/A'
+                elif isinstance(v, list):
+                    for i in range(len(v)):
+                        if v[i] is None:
+                            v[i] = 'N/A'
+            return d
 
-        application_deadline_str = data.get('application_deadline')
-        application_deadline = datetime.fromisoformat(application_deadline_str.replace('Z', '+00:00'))
-        now = datetime.now(timezone.utc)
-
-        current_status = "active" if application_deadline >= now else "expired"
+        data = replace_nulls(data)
+        # Remove unnecessary fields
+        data.pop('role', None)
+        data.pop('userId', None)
 
         # Prepare job data
         job_post = {
-            "job_data": {
-                "title": data.get('title'),
-                "company_name": data.get('company_name'),
-                "company_overview": data.get('company_overview'),
-                "company_website": data.get('company_website'),
-                "job_description": data.get('job_description'),
-                "key_responsibilities": data.get('key_responsibilities'),
-                "required_skills": data.get('required_skills'),
-                "education_requirements": data.get('education_requirements'),
-                "experience_level": data.get('experience_level'),
-                "salary_range": data.get('salary_range'),
-                "benefits": data.get('benefits'),
-                "job_location": data.get('job_location'),
-                "work_type": data.get('work_type'),
-                "work_schedule": data.get('work_schedule'),
-                "application_instructions": data.get('application_instructions'),
-                "application_deadline": data.get('application_deadline'),
-                "contact_email": data.get('contact_email'),
-                "contact_phone": data.get('contact_phone'),
-                "job_link": data.get('job_link'),
-                "selectedCategory": data.get('selectedCategory'),
-                "selectedWorkType": data.get('selectedWorkType')
-            },
-            "admin_id" if role == "admin" else "superadmin_id":  userid,#admin_id if role == "admin" else superadmin_id,  # Save the admin_id from the token
+            "job_data": data,
+            "admin_id" if role == "admin" else "superadmin_id": userid,  # Save the admin_id from the token
             "is_publish": is_publish,  # Auto-approve if enabled
-            "status": current_status,
+            "status": "Active" if data.get('Application_Process_Timeline', {}).get('Application_Deadline', 'N/A') >= datetime.now().isoformat() else "expired",
             "updated_at": datetime.now()
         }
 
         # Insert the job post into the database
-        job_collection.insert_one(job_post)
+        test_job_collection = db['Testjob']
+        test_job_collection.insert_one(job_post)
 
         return Response(
             {
@@ -629,6 +882,8 @@ def job_post(request):
         print(e)
         return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
+
+
         
 @csrf_exempt
 def get_jobs_for_mail(request):
@@ -646,11 +901,11 @@ def get_jobs_for_mail(request):
 
             # Fetch admin details using admin_id
             admin_id = job.get("admin_id")
-            admin_name = "Unknown Admin"
+            admin_name = "Super Admin"
             if admin_id:
                 admin = admin_collection.find_one({"_id": ObjectId(admin_id)})
                 if admin:
-                    admin_name = admin.get("name", "Unknown Admin")
+                    admin_name = admin.get("name", "Super Admin")
 
             # Ensure job_data exists and has application_deadline
             if "job_data" in job and "application_deadline" in job["job_data"]:
@@ -763,20 +1018,32 @@ def review_job(request, job_id):
     else:
         return JsonResponse({"error": "Invalid request method"}, status=400)
     
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+
 @csrf_exempt
 def get_published_jobs(request):
     """
     Fetch all jobs with is_publish set to True (Approved).
     """
     try:
-        published_jobs = job_collection.find({"is_publish": True})  # Ensures only approved jobs are fetched
         job_list = []
+        published_jobs = job_collection.find({"is_publish": True})  # Ensures only approved jobs are fetched
         for job in published_jobs:
             job["_id"] = str(job["_id"])  # Convert ObjectId to string
+            # Rename 'job_location' to 'location' if it exists
+            if "job_data" in job and "job_location" in job["job_data"]:
+                job["job_data"]["location"] = job["job_data"].pop("job_location")
+            # Calculate total views
+            total_views = sum(view["count"] for view in job.get("views", []))
+            # Remove views field and add total_views
+            job.pop("views", None)
+            job["total_views"] = total_views
             job_list.append(job)
         return JsonResponse({"jobs": job_list}, status=200)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
     
 @csrf_exempt
 def get_job_by_id(request, job_id):
@@ -869,6 +1136,56 @@ def delete_job(request, job_id):
             return JsonResponse({"error": str(e)}, status=500)
     else:
         return JsonResponse({"error": "Invalid method"}, status=405)
+
+@csrf_exempt
+def get_all_jobs_and_internships(request):
+    """
+    Fetch all jobs and internships and return their statistics.
+    """
+    try:
+        # Fetch all jobs
+        jobs = list(job_collection.find())
+        total_jobs = len(jobs)
+        job_pending_requests = sum(1 for job in jobs if job.get("is_publish") is None)  # Fixed logic
+        job_rejected_count = sum(1 for job in jobs if job.get("is_publish") is False)  # Now correctly counts rejections
+
+        for job in jobs:
+            job["_id"] = str(job["_id"])  # Convert ObjectId to string
+            # Rename 'job_location' to 'location' if it exists
+            if "job_data" in job and "job_location" in job["job_data"]:
+                job["job_data"]["location"] = job["job_data"].pop("job_location")
+            # Calculate total views for jobs
+            total_views = sum(view["count"] for view in job.get("views", []))
+            job.pop("views", None)
+            job["total_views"] = total_views
+
+        # Fetch all internships
+        internships = list(internship_collection.find())
+        total_internships = len(internships)
+        internship_pending_requests = sum(1 for internship in internships if internship.get("is_publish") is None)  # Fixed logic
+        internship_rejected_count = sum(1 for internship in internships if internship.get("is_publish") is False)  # Now correctly counts rejections
+
+        for internship in internships:
+            internship["_id"] = str(internship["_id"])  # Convert ObjectId to string
+            # Calculate total views for internships
+            total_views = sum(view["count"] for view in internship.get("views", []))
+            internship.pop("views", None)
+            internship["total_views"] = total_views
+
+        # Calculate total pending and rejected counts
+        pending_requests = job_pending_requests + internship_pending_requests
+        rejected_count = job_rejected_count + internship_rejected_count
+
+        return JsonResponse({
+            "jobs": jobs,
+            "internships": internships,
+            "total_jobs": total_jobs,
+            "total_internships": total_internships,
+            "pending_requests": pending_requests,
+            "rejected_count": rejected_count
+        }, status=200)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
 
 # ============================================================== ACHIEVEMENTS ======================================================================================
 
@@ -1007,6 +1324,22 @@ def get_achievements(request):
         return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
+def get_achievement_by_id(request, achievement_id):
+    """
+    Fetch a single achievement by its ID.
+    """
+    try:
+        achievement = achievement_collection.find_one({"_id": ObjectId(achievement_id)})
+        if not achievement:
+            return JsonResponse({"error": "Achievement not found"}, status=404)
+
+        achievement["_id"] = str(achievement["_id"])  # Convert ObjectId to string
+        return JsonResponse({"achievement": achievement}, status=200)
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=500)
+    
+
+@csrf_exempt
 def delete_achievement(request, achievement_id):
     """
     Delete an achievement by its ID.
@@ -1037,6 +1370,186 @@ def get_published_achievements(request):
         return JsonResponse({"error": str(e)}, status=500)
     
 # ============================================================== INTERNSHIP ======================================================================================
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+@csrf_exempt
+def upload_internship_image(request):
+    if request.method == "POST":
+        try:
+            # Get uploaded image
+            internship_image = request.FILES.get("image")
+            if not internship_image:
+                return JsonResponse({"error": "No image provided"}, status=400)
+
+            # Open and process image
+            image = Image.open(internship_image)
+            extracted_text = pytesseract.image_to_string(image, lang="eng")
+
+            # Preprocess text and map to fields
+            internship_data = parse_internship_details(extracted_text)
+
+            return JsonResponse({"message": "Text extracted successfully", "data": internship_data}, status=200)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    return JsonResponse({"error": "Invalid request method"}, status=405)
+
+# Function to parse text and map it to internship form fields
+def parse_internship_details(text):
+    # Remove unwanted characters and normalize text
+    text = re.sub(r"\n+", "\n", text).strip()
+
+    # Extract key information using regex or keyword matching
+    title = extract_field(text, ["Position", "Title"])
+    company_name = extract_field(text, ["Company Name", "Organization"])
+    location = extract_field(text, ["Location"], default="Remote")
+    duration = extract_field(text, ["Duration"], default="Not Mentioned")
+    stipend = extract_field(text, ["Stipend", "Salary"], default="Unpaid")
+    application_deadline = extract_field(text, ["Application Deadline", "Apply By"], default="2025-03-01")
+    required_skills = extract_list(text, ["Skills", "Required Skills"])
+    job_description = extract_field(text, ["Description", "Job Role"], default="Not Available")
+    company_website = extract_field(text, ["Website", "More Information"], default="Not Provided")
+    internship_type = extract_field(text, ["Internship Type"], default="Part-time")
+
+    # Construct structured internship data
+    return {
+        "title": title,
+        "company_name": company_name,
+        "location": location,
+        "duration": duration,
+        "stipend": stipend,
+        "application_deadline": application_deadline,
+        "required_skills": required_skills,
+        "job_description": job_description,
+        "company_website": company_website,
+        "internship_type": internship_type
+    }
+
+# Helper function to extract single field from text
+def extract_field(text, keywords, default=""):
+    for keyword in keywords:
+        match = re.search(rf"{keyword}[:\-]?\s*(.*)", text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+    return default
+
+# Helper function to extract list values
+def extract_list(text, keywords):
+    for keyword in keywords:
+        match = re.search(rf"{keyword}[:\-]?\s*(.*)", text, re.IGNORECASE)
+        if match:
+            return [skill.strip() for skill in match.group(1).split(",")]
+    return []
+
+import json
+import re
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from PIL import Image, ImageFilter
+import pytesseract
+import google.generativeai as genai
+
+genai.configure(api_key="AIzaSyCLDQgKnO55UQrnFsL2d79fxanIn_AL0WA")
+
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+def preprocess_image(image):
+    """Enhances image quality for better OCR recognition."""
+    image = image.convert("L")  # Convert to grayscale
+    image = image.filter(ImageFilter.SHARPEN)  # Sharpen image
+    return image
+
+def extract_text_from_image(image):
+    """Extracts raw text from the uploaded internship image using OCR."""
+    processed_image = preprocess_image(image)
+    extracted_text = pytesseract.image_to_string(processed_image, lang="eng")
+    return extracted_text.strip()
+
+def analyze_text_with_gemini_api(ocr_text):
+    """Sends extracted text to Gemini API and retrieves structured internship data."""
+    prompt = f"""
+    Extract internship posting details from the following text and return in JSON format.
+    **Extracted Text:**
+    {ocr_text}
+    **Output Format (Ensure All Fields Exist & Fill Missing Ones)**:
+    {{
+        "title": "Extracted Internship Title or 'No Data Available'",
+        "company_name": "Extracted Company Name or 'No Data Available'",
+        "location": "Extracted Location or 'No Data Available'",
+        "duration": "Extracted Duration or 'No Data Available'",
+        "stipend": "Extracted Stipend or 'No Data Available'",
+        "application_deadline": "YYYY-MM-DD or 'No Data Available'",
+        "required_skills": [
+            "Skill 1",
+            "Skill 2",
+            "Infer if missing"
+        ],
+        "education_requirements": "Extracted Qualification or 'No Data Available'",
+        "job_description": "Extracted Internship Description or 'No Data Available'",
+        "company_website": "Extracted Website or 'No Data Available'",
+        "job_link": "Extracted Internship Link or 'No Data Available'",
+        "internship_type": "Full-time/Part-time (Infer if missing)"
+    }}
+    **Ensure output is valid JSON with no additional text.**
+    """
+    # Call Gemini AI Model
+    model = genai.GenerativeModel("gemini-pro")
+    response = model.generate_content(prompt)
+
+    try:
+        # ✅ Clean AI response (remove Markdown formatting)
+        cleaned_response = re.sub(r"```json|```", "", response.text).strip()
+        json_output = json.loads(cleaned_response)  # Convert to JSON
+
+        # ✅ Ensure all required fields have values (fallback to "No Data Available")
+        required_fields = {
+            "title": "No Data Available",
+            "company_name": "No Data Available",
+            "location": "No Data Available",
+            "duration": "No Data Available",
+            "stipend": "No Data Available",
+            "application_deadline": "No Data Available",
+            "required_skills": [],
+            "education_requirements": "No Data Available",
+            "job_description": "No Data Available",
+            "company_website": "No Data Available",
+            "job_link": "No Data Available",
+            "internship_type": "No Data Available"
+        }
+        for key, default_value in required_fields.items():
+            if key not in json_output or not json_output[key]:
+                json_output[key] = default_value
+
+        return json_output
+    except json.JSONDecodeError as e:
+        print("\n❌ AI Response Error:", str(e))
+        return {"error": "AI processing failed. Please try again."}
+
+@csrf_exempt
+def upload_internship_image(request):
+    """Handles internship image uploads, extracts text using OCR, and refines it using AI."""
+    if request.method == "POST":
+        try:
+            internship_image = request.FILES.get("image")
+            if not internship_image:
+                return JsonResponse({"error": "No image provided"}, status=400)
+
+            # Step 1: Extract raw text
+            raw_text = extract_text_from_image(Image.open(internship_image))
+
+            # Step 2: Process AI enhancement
+            internship_data = analyze_text_with_gemini_api(raw_text)
+            if "error" in internship_data:
+                return JsonResponse({"error": "AI processing failed. Please try again."}, status=500)
+
+
+            return JsonResponse({"message": "Text extracted successfully", "data": internship_data}, status=200)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Invalid request method"}, status=405)
+
 
 @csrf_exempt
 def post_internship(request):
@@ -1053,7 +1566,6 @@ def post_internship(request):
             if role == 'admin':
                 if is_auto_approval:
                     is_publish = True
-
             elif role == 'superadmin':
                 is_publish = True
 
@@ -1066,7 +1578,7 @@ def post_internship(request):
                 return JsonResponse({"error": "Invalid date format for application_deadline. Use YYYY-MM-DD."}, status=400)
 
             now = datetime.now(timezone.utc)
-            current_status = "active" if application_deadline >= now else "expired"
+            current_status = "Active" if application_deadline >= now else "Expired"
 
             # Ensure required fields are present
             required_fields = [
@@ -1084,21 +1596,32 @@ def post_internship(request):
                     "title": data['title'],
                     "company_name": data['company_name'],
                     "location": data['location'],
+                    "industry_type": data.get('industry_type', "NA"),
                     "duration": data['duration'],
                     "stipend": data['stipend'],
                     "application_deadline": application_deadline,
                     "required_skills": data['skills_required'],
-                    "education_requirements": data.get('education_requirements', ""),
+                    "technical_skills": data.get('technical_skills', []),
+                    "soft_skills": data.get('soft_skills', []),
+                    "additional_skills": data.get('additional_skills', []),
+                    "education_requirements": data.get('education_requirements', "NA"),
                     "job_description": data['job_description'],
                     "company_website": data['company_website'],
-                    "job_link": data.get('job_link', ""),
                     "internship_type": data['internship_type'],
+                    "documents_required": data.get('documents_required', "NA"),
+                    "internship_posting_date": data.get('internship_posting_date', "NA"),
+                    "interview_start_date": data.get('interview_start_date', "NA"),
+                    "interview_end_date": data.get('interview_end_date', "NA"),
+                    "internship_link": data.get('internship_link', "NA"),
+                    "selection_process": data.get('selection_process', "NA"),
+                    "steps_to_apply": data.get('steps_to_apply', "NA")
                 },
                 "admin_id" if role == "admin" else "superadmin_id": userid,
                 "is_publish": is_publish,
                 "status": current_status,
-                "updated_at": datetime.utcnow()
+                "updated_at": datetime.now(timezone.utc)
             }
+            print(internship_post)
 
             # Insert into MongoDB
             internship_collection.insert_one(internship_post)
@@ -1110,6 +1633,7 @@ def post_internship(request):
             return JsonResponse({"error": str(e)}, status=500)
 
     return JsonResponse({"error": "Invalid request method. Only POST is allowed."}, status=405)
+
 
 @csrf_exempt
 def manage_internships(request):
@@ -1148,6 +1672,9 @@ def manage_internships(request):
     else:
         return JsonResponse({'error': 'Invalid request method'}, status=405)
 
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+
 @csrf_exempt
 def get_published_internships(request):
     try:
@@ -1155,10 +1682,16 @@ def get_published_internships(request):
         published_internships = internship_collection.find({"is_publish": True})
         for internship in published_internships:
             internship["_id"] = str(internship["_id"])
+            # Calculate total views
+            total_views = sum(view["count"] for view in internship.get("views", []))
+            # Remove views field and add total_views
+            internship.pop("views", None)
+            internship["total_views"] = total_views
             internship_list.append(internship)
         return JsonResponse({"internships": internship_list}, status=200)
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+
 
 @csrf_exempt
 def review_internship(request, internship_id):
@@ -1349,6 +1882,7 @@ def manage_jobs(request):
     else:
         return JsonResponse({'error': 'Invalid request method'}, status=405)
        
+
 @csrf_exempt
 def get_jobs(request):
     if request.method == 'GET':
@@ -1359,24 +1893,86 @@ def get_jobs(request):
         jwt_token = auth_header.split(" ")[1]
 
         try:
-            decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])  
+            decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
             admin_user = decoded_token.get('admin_user')
 
-            jobs = job_collection.find({'admin_id': admin_user})
             jobs_list = []
+            achievements_list = []
 
+            # Counters for job & internship approvals, rejections, pending, and total achievements
+            total_jobs = 0
+            total_internships = 0
+            total_achievements = 0
+            approvals = 0
+            rejections = 0
+            pending = 0
+
+            # Fetch jobs
+            jobs = job_collection.find({'admin_id': admin_user})
             for job in jobs:
                 job['_id'] = str(job['_id'])
-                job['type'] = 'job' 
+                job['type'] = 'job'
+
+                # Rename 'job_location' to 'location' if it exists
+                if "job_data" in job and "job_location" in job["job_data"]:
+                    job["job_data"]["location"] = job["job_data"].pop("job_location")
+
+                # Calculate total views for jobs
+                total_views = sum(view["count"] for view in job.get("views", []))
+                job.pop("views", None)
+                job["total_views"] = total_views
+
+                # Update approval status count
+                if job.get("is_publish") is True:
+                    approvals += 1
+                elif job.get("is_publish") is False:
+                    rejections += 1
+                else:
+                    pending += 1
+
+                total_jobs += 1
                 jobs_list.append(job)
 
+            # Fetch internships
             internships = internship_collection.find({'admin_id': admin_user})
             for internship in internships:
                 internship['_id'] = str(internship['_id'])
                 internship['type'] = 'internship'
+
+                # Calculate total views for internships
+                total_views = sum(view["count"] for view in internship.get("views", []))
+                internship.pop("views", None)
+                internship["total_views"] = total_views
+
+                # Update approval status count
+                if internship.get("is_publish") is True:
+                    approvals += 1
+                elif internship.get("is_publish") is False:
+                    rejections += 1
+                else:
+                    pending += 1
+
+                total_internships += 1
                 jobs_list.append(internship)
 
-            return JsonResponse({'jobs': jobs_list}, status=200)
+            # Fetch achievements
+            achievements = achievement_collection.find({'admin_id': admin_user})
+            for achievement in achievements:
+                achievement['_id'] = str(achievement['_id'])
+                achievement['type'] = 'achievement'
+                achievements_list.append(achievement)
+                total_achievements += 1  # Count total achievements
+
+            return JsonResponse({
+                'jobs': jobs_list,
+                'achievements': achievements_list,
+                'approvals': approvals,
+                'rejections': rejections,
+                'pending': pending,
+                'total_jobs': total_jobs,
+                'total_internships': total_internships,
+                'total_achievements': total_achievements  # Added total achievements count
+            }, status=200)
 
         except jwt.ExpiredSignatureError:
             return JsonResponse({'error': 'JWT token has expired'}, status=401)
@@ -1490,7 +2086,13 @@ def submit_feedback(request):
             }
             reviews_collection.insert_one(review_document)
 
-            return JsonResponse({'message': 'Feedback submitted successfully'}, status=200)
+            # Update the is_publish field in the respective collection to False
+            collection.update_one(
+                {'_id': ObjectId(item_id)},
+                {'$set': {'is_publish': False}}
+            )
+
+            return JsonResponse({'message': 'Feedback submitted successfully and item unpublished'}, status=200)
 
         except jwt.ExpiredSignatureError:
             return JsonResponse({"error": "Token has expired"}, status=401)
@@ -1503,6 +2105,7 @@ def submit_feedback(request):
 
 
 # ============================================================== STUDY MATERIALS ======================================================================================
+#post study_material
 
 @csrf_exempt
 def post_study_material(request):
@@ -1512,67 +2115,259 @@ def post_study_material(request):
             auth_header = request.headers.get('Authorization')
             if not auth_header or not auth_header.startswith("Bearer "):
                 return JsonResponse({"error": "No token provided"}, status=401)
-
             jwt_token = auth_header.split(" ")[1]
-
             # Decode JWT token
             try:
                 decoded_token = jwt.decode(jwt_token, 'secret', algorithms=["HS256"])
-                print("Decoded Token:", decoded_token)  # Debugging: Check the decoded token
             except jwt.ExpiredSignatureError:
                 return JsonResponse({"error": "Token expired"}, status=401)
             except jwt.InvalidTokenError:
                 return JsonResponse({"error": "Invalid token"}, status=401)
-
             role = decoded_token.get('role')
             auto_approval_setting = superadmin_collection.find_one({"key": "auto_approval"})
             is_auto_approval = auto_approval_setting.get("value", False) if auto_approval_setting else False
-
             if role == 'admin':
-                admin_id = decoded_token.get('admin_user')  
+                admin_id = decoded_token.get('admin_user')
                 if not admin_id:
                     return JsonResponse({"error": "Invalid token"}, status=401)
                 is_publish = True
-            
             elif role == 'superadmin':
                 superadmin_id = decoded_token.get('superadmin_user')
                 if not superadmin_id:
                     return JsonResponse({"error": "Invalid token"}, status=401)
                 is_publish = True
-
             # Parse incoming JSON data
             data = json.loads(request.body)
-
             # Ensure required fields are present
-            required_fields = ['title', 'description', 'category', 'text_content']
+            required_fields = ['type', 'title', 'description', 'category', 'links']
             for field in required_fields:
                 if field not in data:
                     return JsonResponse({"error": f"Missing required field: {field}"}, status=400)
-
+            # Prepare study material document
             study_material_post = {
-                "study_material_data": {
-                    "title": data['title'],
-                    "description": data['description'],
-                    "category": data['category'],
-                    "text_content": data['text_content'],
-                    "link":data['link']
-                },
+                "type": data['type'],
+                "title": data['title'],
+                "description": data['description'],
+                "category": data['category'],
+                "links": data['links'],  # Links now include the topic field
+
+                "links": data['links'],  # Links now include the topic field
                 "admin_id" if role == "admin" else "superadmin_id": admin_id if role == "admin" else superadmin_id,
                 "is_publish": is_publish,
                 "updated_at": datetime.utcnow()
             }
-
             # Insert into MongoDB
             study_material_collection.insert_one(study_material_post)
-
             return JsonResponse({"message": "Study Material posted successfully"}, status=200)
-
         except json.JSONDecodeError:
             return JsonResponse({"error": "Invalid JSON format."}, status=400)
         except Exception as e:
             return JsonResponse({"error": str(e)}, status=500)
-
     return JsonResponse({"error": "Invalid request method. Only POST is allowed."}, status=405)
+
+
+@csrf_exempt
+def get_categories(request):
+    if request.method == 'GET':
+        try:
+            import re
+            # Get query parameters
+            material_type = request.GET.get('type')
+            query = request.GET.get('query', '')
+            if not material_type:
+                return JsonResponse({"error": "Type parameter is required"}, status=400)
+            # Create regex pattern for case-insensitive search
+            regex_pattern = re.compile(f".*{re.escape(query)}.*", re.IGNORECASE)
+            # Fetch distinct categories where:
+            # - 'type' matches the provided type
+            # - 'category' field exists
+            # - 'category' matches the query (if any)
+            categories = list(study_material_collection.distinct(
+                "category",
+                {
+                    "type": material_type,
+                    "category": {"$exists": True, "$regex": regex_pattern}
+                }
+            ))
+            # Debugging logs
+            if not categories:
+                print(f"No categories found for type '{material_type}'. Logging collection content:")
+                for doc in study_material_collection.find({"type": material_type, "category": {"$exists": True}}):
+                    print(doc)
+            return JsonResponse({"categories": categories}, status=200)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    return JsonResponse({"error": "Invalid request method. Only GET is allowed."}, status=405)
+
+
+# @csrf_exempt
+# @api_view(['POST'])
+# def post_study_material(request):
+#     if request.method == 'POST':
+#         try:
+#             # Get JWT token from Authorization Header
+#             auth_header = request.headers.get('Authorization')
+#             if not auth_header or not auth_header.startswith("Bearer "):
+#                 return JsonResponse({"error": "No token provided"}, status=401)
+
+#             jwt_token = auth_header.split(" ")[1]
+
+#             # Decode JWT token
+#             try:
+#                 decoded_token = jwt.decode(jwt_token, 'secret', algorithms=["HS256"])
+#             except jwt.ExpiredSignatureError:
+#                 return JsonResponse({"error": "Token expired"}, status=401)
+#             except jwt.InvalidTokenError:
+#                 return JsonResponse({"error": "Invalid token"}, status=401)
+
+#             role = decoded_token.get('role')
+#             auto_approval_setting = superadmin_collection.find_one({"key": "auto_approval"})
+#             is_auto_approval = auto_approval_setting.get("value", False) if auto_approval_setting else False
+
+#             if role == 'admin':
+#                 admin_id = decoded_token.get('admin_user')
+#                 if not admin_id:
+#                     return JsonResponse({"error": "Invalid token"}, status=401)
+#                 is_publish = True
+
+#             elif role == 'superadmin':
+#                 superadmin_id = decoded_token.get('superadmin_user')
+#                 if not superadmin_id:
+#                     return JsonResponse({"error": "Invalid token"}, status=401)
+#                 is_publish = True
+
+#             # Parse incoming JSON data
+#             data = json.loads(request.body)
+
+#             # Ensure required fields are present
+#             required_fields = ['exam', 'title', 'description', 'source_links']
+#             for field in required_fields:
+#                 if field not in data:
+#                     return JsonResponse({"error": f"Missing required field: {field}"}, status=400)
+
+#             study_material_post = {
+#                 "type": "exam",
+#                 "exam": data['exam'],
+#                 "title": data['title'],
+#                 "description": data['description'],
+#                 "source_links": data['source_links'].split(','),  # Assuming links are comma-separated
+#                 "admin_id" if role == "admin" else "superadmin_id": admin_id if role == "admin" else superadmin_id,
+#                 "is_publish": is_publish,
+#                 "updated_at": datetime.utcnow()
+#             }
+
+#             # Insert into MongoDB
+#             study_material_collection.insert_one(study_material_post)
+
+#             return JsonResponse({"message": "Exam Material posted successfully"}, status=200)
+
+#         except json.JSONDecodeError:
+#             return JsonResponse({"error": "Invalid JSON format."}, status=400)
+#         except Exception as e:
+#             return JsonResponse({"error": str(e)}, status=500)
+
+#     return JsonResponse({"error": "Invalid request method. Only POST is allowed."}, status=405)
+
+# @csrf_exempt
+# def exam_topic(request):
+#     if request.method == 'GET'
+@csrf_exempt
+def get_categories(request):
+    if request.method == 'GET':
+        try:
+            import re
+            # Get query parameters
+            material_type = request.GET.get('type')
+            query = request.GET.get('query', '')
+            if not material_type:
+                return JsonResponse({"error": "Type parameter is required"}, status=400)
+            # Create regex pattern for case-insensitive search
+            regex_pattern = re.compile(f".*{re.escape(query)}.*", re.IGNORECASE)
+            # Fetch distinct categories where:
+            # - 'type' matches the provided type
+            # - 'category' field exists
+            # - 'category' matches the query (if any)
+            categories = list(study_material_collection.distinct(
+                "category",
+                {
+                    "type": material_type,
+                    "category": {"$exists": True, "$regex": regex_pattern}
+                }
+            ))
+            # Debugging logs
+            if not categories:
+                print(f"No categories found for type '{material_type}'. Logging collection content:")
+                for doc in study_material_collection.find({"type": material_type, "category": {"$exists": True}}):
+                    print(doc)
+            return JsonResponse({"categories": categories}, status=200)
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+    return JsonResponse({"error": "Invalid request method. Only GET is allowed."}, status=405)
+
+@csrf_exempt
+def get_topics_by_category(request):
+    if request.method == 'GET':
+        try:
+            category = request.GET.get('category')
+            if not category:
+                return JsonResponse({"error": "Category is required"}, status=400)
+
+            # Use aggregation to unwind the links array and extract distinct topics
+            pipeline = [
+                {"$match": {"category": category}},
+                {"$unwind": "$links"},
+                {"$group": {"_id": "$links.topic"}},
+                {"$project": {"_id": 0, "topic": "$_id"}}
+            ]
+            topics = list(study_material_collection.aggregate(pipeline))
+            topics = [topic['topic'] for topic in topics]
+
+            return JsonResponse({"topics": topics}, status=200)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Invalid request method. Only GET is allowed."}, status=405)
+
+@csrf_exempt
+def get_materials_by_topic(request):
+    if request.method == 'GET':
+        try:
+            topic = request.GET.get('topic')
+            if not topic:
+                return JsonResponse({"error": "Topic is required"}, status=400)
+
+            # Use aggregation to unwind the links array and filter by topic
+            pipeline = [
+                {"$unwind": "$links"},
+                {"$match": {"links.topic": topic}},
+                {"$group": {
+                    "_id": "$_id",
+                    "type": {"$first": "$type"},
+                    "title": {"$first": "$title"},
+                    "description": {"$first": "$description"},
+                    "category": {"$first": "$category"},
+                    "links": {"$push": "$links"},
+                    "superadmin_id": {"$first": "$superadmin_id"},
+                    "is_publish": {"$first": "$is_publish"},
+                    "updated_at": {"$first": "$updated_at"}
+                }}
+            ]
+            materials = list(study_material_collection.aggregate(pipeline))
+
+            # Convert ObjectId to string
+            for material in materials:
+                material['_id'] = str(material['_id'])
+
+            return JsonResponse({"materials": materials}, status=200)
+
+        except Exception as e:
+            return JsonResponse({"error": str(e)}, status=500)
+
+    return JsonResponse({"error": "Invalid request method. Only GET is allowed."}, status=405)
+
+
+
 
 @csrf_exempt
 def manage_study_materials(request):
@@ -1669,7 +2464,6 @@ def delete_study_material(request, study_material_id):
     else:
         return JsonResponse({"error": "Invalid method"}, status=405)
 
-@csrf_exempt
 def fetch_review(request):
     """Extracts JWT, validates it, and fetches all review documents for the admin ID."""
     auth_header = request.headers.get("Authorization")
@@ -1704,10 +2498,8 @@ def fetch_review(request):
         }
         reviews_list.append(formatted_review)
 
-    if not reviews_list:
-        return JsonResponse({"error": "Reviews not found"}, status=404)
-
-    return JsonResponse({"reviews": reviews_list}, status=200, safe=False)  # Return as a list
+    # Return an empty list if no reviews are found
+    return JsonResponse({"reviews": reviews_list}, status=200, safe=False)
 
 #===============================================================Super-Admin-Mails====================================================================== 
 
@@ -1818,12 +2610,12 @@ def get_achievements_with_admin(request):
 
             # Fetch admin details using user_id
             admin_id = achievement.get("user_id")
-            admin_name = "Unknown Admin"
+            admin_name = "Super Admin"
 
             if admin_id:
                 admin = admin_collection.find_one({"_id": ObjectId(admin_id)})
                 if admin:
-                    admin_name = admin.get("name", "Unknown Admin")
+                    admin_name = admin.get("name", "Super Admin")
 
             # Append achievement details with mapped admin name
             achievement_list.append({
@@ -1862,12 +2654,12 @@ def get_internships_with_admin(request):
 
             # Fetch admin details using admin_id
             admin_id = internship.get("admin_id")
-            admin_name = "Unknown Admin"
+            admin_name = "Super Admin"
 
             if admin_id:
                 admin = admin_collection.find_one({"_id": ObjectId(admin_id)})
                 if admin:
-                    admin_name = admin.get("name", "Unknown Admin")
+                    admin_name = admin.get("name", "Super Admin")
 
             # Append internship details with all fields
             internship_list.append({
@@ -1912,12 +2704,12 @@ def get_study_materials_with_admin(request):
             study_material_data = material.get("study_material_data", {})  # Ensure this exists
 
             admin_id = material.get("admin_id")
-            admin_name = "Unknown Admin"
+            admin_name = "Super Admin"
 
             if admin_id:
                 admin = admin_collection.find_one({"_id": ObjectId(admin_id)})
                 if admin:
-                    admin_name = admin.get("name", "Unknown Admin")
+                    admin_name = admin.get("name", "Super Admin")
 
             # Ensure all fields are correctly mapped
             study_material_list.append({
@@ -1934,7 +2726,6 @@ def get_study_materials_with_admin(request):
             })
 
         return JsonResponse({"study_materials": study_material_list}, status=200)
-        print("Fetched study materials:", study_material_list)
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
@@ -1976,6 +2767,8 @@ def get_student_achievements(request):
 
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
+    
+
       
 #================================================================Profile=======================================================================================
 
@@ -2014,6 +2807,11 @@ def get_admin_details(request, userId):
     else:
         return JsonResponse({"error": "Invalid request method"}, status=400)
     
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from bson import ObjectId
+import json
+
 @csrf_exempt
 def update_admin_profile(request, userId):
     if request.method == "PUT":
@@ -2027,21 +2825,15 @@ def update_admin_profile(request, userId):
                 return JsonResponse({"error": "Admin not found"}, status=404)
 
             # Validate request payload
-            if "name" not in data or "profile_image" not in data:
+            if "name" not in data:
                 return JsonResponse({"error": "Missing required fields"}, status=400)
 
             # Prevent email from being changed
             data.pop("email", None)
 
-            # Ensure only valid predefined images are used
-            allowed_images = ["boy-1.png", "boy-2.png", "boy-3.png", "boy-4.png", "boy-5.png", "boy-6.png", "Girl-1.png", "Girl-2.png", "Girl-3.png", "Girl-4.png", "Girl-5.png"]
-            if data["profile_image"] not in allowed_images:
-                return JsonResponse({"error": "Invalid image selection"}, status=400)
-
-            # Update only name and profile image
+            # Update only the name
             updated_fields = {
-                "name": data["name"],
-                "profile_image": data["profile_image"]
+                "name": data["name"]
             }
 
             admin_collection.update_one({"_id": ObjectId(userId)}, {"$set": updated_fields})
@@ -2052,6 +2844,7 @@ def update_admin_profile(request, userId):
             return JsonResponse({"error": str(e)}, status=400)
     else:
         return JsonResponse({"error": "Invalid request method"}, status=400)
+
 
 @csrf_exempt
 def get_superadmin_details(request, userId):
@@ -2124,4 +2917,57 @@ def achievement_detail(request, achievement_id):
         )
         return Response({"message": "Achievement updated successfully"}, status=status.HTTP_200_OK)
 
+@csrf_exempt
+def view_count(request, id):
+    if request.method == "POST":
+        try:
+            # Parse the request body
+            data = json.loads(request.body)
+            userId = data.get("userId")
+            count = data.get("count", 1)
+            pageType = data.get("pageType")
+            applicationId = data.get("applicationId")
 
+            print(f"Received data - userId: {userId}, count: {count}, pageType: {pageType}, applicationId: {applicationId}")
+
+            if not userId or not pageType or not applicationId:
+                return JsonResponse({"error": "Missing required fields"}, status=400)
+
+            # Determine the collection based on pageType
+            if pageType == "job":
+                collection = job_collection
+            elif pageType == "internship":
+                collection = internship_collection
+            else:
+                return JsonResponse({"error": "Invalid pageType"}, status=400)
+
+            print(f"Using collection: {collection.name}")
+
+            # Find the document by applicationId
+            document = collection.find_one({"_id": ObjectId(applicationId)})
+            if not document:
+                return JsonResponse({"error": "Application not found"}, status=404)
+
+            # Initialize or update the views array
+            views = document.get("views", [])
+            user_view = next((view for view in views if view["userId"] == userId), None)
+
+            if user_view:
+                # If userId exists, do not increment the count, just update the time
+                user_view["count"] = 1  # Ensure the count remains 1
+            else:
+                views.append({"userId": userId, "count": 1})
+
+            # Update the document with the new views array
+            collection.update_one(
+                {"_id": ObjectId(applicationId)},
+                {"$set": {"views": views, "updated_at": datetime.now()}}
+            )
+
+            return JsonResponse({"message": "View count updated successfully"}, status=200)
+
+        except Exception as e:
+            print(f"Error: {str(e)}")
+            return JsonResponse({"error": str(e)}, status=500)
+    else:
+        return JsonResponse({"error": "Invalid request method"}, status=405)
