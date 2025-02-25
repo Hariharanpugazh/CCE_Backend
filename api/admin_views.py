@@ -1260,7 +1260,7 @@ def manage_achievements(request):
             
             # Fetch achievements from MongoDB based on admin_user
             achievements = achievement_collection.find({"admin_id": admin_user} if role == "admin" else {})
-            achievement_list = [{"_id": str(achievement["_id"], **achievement)} for achievement in achievements]
+            achievement_list = [{**achievement, "_id": str(achievement["_id"])} for achievement in achievements]
             
             return JsonResponse({"achievements": achievement_list}, status=200)
         
@@ -1872,7 +1872,7 @@ def manage_jobs(request):
             
             # Fetch jobs from MongoDB based on admin_user
             jobs = job_collection.find({"admin_id": admin_user} if role == "admin" else {})
-            job_list = [{"_id": str(job["_id"], **job)} for job in jobs]
+            job_list = [{**job, "_id": str(job["_id"])} for job in jobs]
             
             return JsonResponse({"jobs": job_list}, status=200)
         
@@ -1883,7 +1883,7 @@ def manage_jobs(request):
         except Exception as e:
             return JsonResponse({'error': f'An error occurred: {str(e)}'}, status=400)
     else:
-        return JsonResponse({'error': 'Invalid request method'}, status=405)   
+        return JsonResponse({'error': 'Invalid request method'}, status=405)
 
 @csrf_exempt
 def get_jobs(request):
