@@ -948,6 +948,18 @@ def toggle_auto_approval(request):
     API to enable or disable auto-approval.
     """
     try:
+        # Retrieve JWT token from Authorization Header
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return JsonResponse({'error': 'No token provided'}, status=401)
+        
+        jwt_token = auth_header.split(" ")[1]
+        decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=["HS256"])
+        role = decoded_token.get('role')
+        
+        if role != "superadmin":
+            return JsonResponse({'error': 'Unauthorized access'}, status=403)
+        
         data = json.loads(request.body)
         is_auto_approval = data.get("is_auto_approval", False)  # Default is False
 
@@ -960,8 +972,12 @@ def toggle_auto_approval(request):
 
         return JsonResponse({"message": "Auto-approval setting updated successfully"}, status=200)
 
+    except jwt.ExpiredSignatureError:
+        return JsonResponse({'error': 'JWT token has expired'}, status=401)
+    except jwt.InvalidTokenError as e:
+        return JsonResponse({'error': f'Invalid JWT token: {str(e)}'}, status=401)
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse({'error': str(e)}, status=500)
 
 @csrf_exempt
 @api_view(["GET"])
@@ -970,11 +986,28 @@ def get_auto_approval_status(request):
     API to check if auto-approval is enabled.
     """
     try:
+        # Retrieve JWT token from Authorization Header
+        auth_header = request.headers.get('Authorization')
+        if not auth_header or not auth_header.startswith("Bearer "):
+            return JsonResponse({'error': 'No token provided'}, status=401)
+        
+        jwt_token = auth_header.split(" ")[1]
+        decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=["HS256"])
+        role = decoded_token.get('role')
+        
+        if role != "superadmin":
+            return JsonResponse({'error': 'Unauthorized access'}, status=403)
+        
         auto_approval_setting = superadmin_collection.find_one({"key": "auto_approval"})
         is_auto_approval = auto_approval_setting.get("value", False) if auto_approval_setting else False
         return JsonResponse({"is_auto_approval": is_auto_approval}, status=200)
+    
+    except jwt.ExpiredSignatureError:
+        return JsonResponse({'error': 'JWT token has expired'}, status=401)
+    except jwt.InvalidTokenError as e:
+        return JsonResponse({'error': f'Invalid JWT token: {str(e)}'}, status=401)
     except Exception as e:
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse({'error': str(e)}, status=500)
 
 @csrf_exempt
 def review_job(request, job_id):
