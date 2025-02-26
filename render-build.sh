@@ -7,17 +7,9 @@ echo "Installing dependencies..."
 pip install --upgrade pip  # Ensure the latest pip version
 pip install -r requirements.txt 
 
-# Install Playwright without root requirement
+# Install Playwright without unsupported flags
 echo "Installing Playwright..."
-npx playwright install --with-deps --no-sandbox || true  # Ignore errors
-
-# Apply database migrations
-echo "Running migrations..."
-python manage.py migrate
-
-# Collect static files
-echo "Collecting static files..."
-python manage.py collectstatic --noinput
+playwright install --with-deps || true  # Prevent failure if Playwright is not required
 
 # Start the Gunicorn server
 echo "Starting Gunicorn server..."
