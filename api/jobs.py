@@ -107,10 +107,10 @@ def scrape_naukri_jobs(request):
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True,args=["--no-sandbox", "--disable-gpu"])  # Set to False for debugging
+            browser = p.chromium.launch( headless=True, args=["--no-sandbox", "--disable-gpu"])  # Set to False for debugging
             context = browser.new_context(
-                user_agent=HEADERS["User-Agent"],
-                extra_http_headers=HEADERS
+            user_agent=HEADERS["User-Agent"],
+            extra_http_headers=HEADERS
             )
             page = context.new_page()
             
