@@ -7,9 +7,9 @@ echo "Installing dependencies..."
 pip install --upgrade pip  # Ensure the latest pip version
 pip install -r requirements.txt 
 
-# Install Playwright without unsupported flags
-echo "Installing Playwright..."
-playwright install --with-deps || true  # Prevent failure if Playwright is not required
+# Install Playwright **and force browser installation**
+echo "Installing Playwright and browsers..."
+playwright install chromium firefox webkit --with-deps
 
 # Start the Gunicorn server
 echo "Starting Gunicorn server..."
