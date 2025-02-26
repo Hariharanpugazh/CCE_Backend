@@ -86,46 +86,6 @@ def fetch_jobs_api(request):
     except requests.exceptions.RequestException as e:
         return JsonResponse({"error": f"API request failed: {str(e)}"}, status=500)
 
-def test_playwright_scraping():
-    """Test if Playwright can fetch job listings from Naukri"""
-
-    query = "Frontend Developer"
-    location = "Chennai"
-
-    query_formatted = query.replace(" ", "-")
-    location_formatted = location.replace(" ", "-")
-    naukri_url = f"https://www.naukri.com/{query_formatted}-jobs-in-{location_formatted}"
-
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False)  # Set headless=False for debugging
-        page = browser.new_page()
-        page.goto(naukri_url, timeout=60000)
-
-        job_cards = page.query_selector_all(".srp-jobtuple-wrapper")
-
-        if not job_cards:
-            print("No job cards found!")
-            return
-
-        for job in job_cards[:5]:  # Test with first 5 jobs
-            try:
-                title = job.query_selector("h2 a").inner_text().strip()
-                job_link = job.query_selector("h2 a").get_attribute("href")
-                company_name = job.query_selector("span a.comp-name").inner_text().strip()
-
-                print("\nJob Found:")
-                print(f"Title: {title}")
-                print(f"Company: {company_name}")
-                print(f"Link: {job_link}")
-
-            except Exception as e:
-                print(f"Error extracting job: {e}")
-
-        browser.close()
-
-# Run the test
-test_playwright_scraping()
-
 # **Custom Headers (Looks Like a Real Browser)**
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -147,7 +107,7 @@ def scrape_naukri_jobs(request):
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)  # Set to False for debugging
+            browser = p.chromium.launch(headless=True,args=["--no-sandbox", "--disable-gpu"])  # Set to False for debugging
             context = browser.new_context(
                 user_agent=HEADERS["User-Agent"],
                 extra_http_headers=HEADERS
