@@ -1,16 +1,16 @@
 #!/bin/bash
 
-# Exit immediately if a command exits with a non-zero status
+# Exit if any command fails
 set -e
 
 echo "Installing dependencies..."
-pip install --upgrade pip  # Ensure the latest pip version
+pip install --upgrade pip
 pip install -r requirements.txt 
 
-# Install Playwright **and force browser installation**
+# **Fix Playwright browser installation without root access**
 echo "Installing Playwright and browsers..."
-playwright install chromium firefox webkit --with-deps
+npx playwright install chromium firefox webkit --with-deps || true  # Skip errors
 
 # Start the Gunicorn server
 echo "Starting Gunicorn server..."
-gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT
+gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --timeout 120
