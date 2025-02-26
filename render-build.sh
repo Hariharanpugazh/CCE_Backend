@@ -1,16 +1,21 @@
 #!/bin/bash
 
-# Exit on any failure
+# Exit immediately if a command exits with a non-zero status
 set -e  
 
-# Install project dependencies
-pip install -r requirements.txt
+echo "Installing dependencies..."
+pip install -r requirements.txt  
 
-# Install Playwright and required browsers
-playwright install --with-deps
+# Install Playwright without requiring root access
+echo "Installing Playwright..."
+playwright install --with-deps --single-process  
 
-# Display installed browsers (for debugging)
-playwright install --check
+# Start the Django application
+echo "Running migrations..."
+python manage.py migrate  
 
-# Run the application
-exec "$@"
+echo "Collecting static files..."
+python manage.py collectstatic --noinput  
+
+echo "Starting Gunicorn server..."
+gunicorn backend.wsgi:application --bind 0.0.0.0:8000  
