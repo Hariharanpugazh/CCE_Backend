@@ -1,13 +1,16 @@
 #!/bin/bash
-set -e
 
-echo "🏗️ Installing Python Dependencies..."
-pip install --upgrade pip
+# Exit on any failure
+set -e  
+
+# Install project dependencies
 pip install -r requirements.txt
+
+# Install Playwright and required browsers
 playwright install --with-deps
 
-echo "🌍 Installing Playwright Dependencies..."
-PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium
+# Display installed browsers (for debugging)
+playwright install --check
 
-echo "🚀 Starting Gunicorn Server..."
-gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT
+# Run the application
+exec "$@"
