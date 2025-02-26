@@ -2,10 +2,10 @@
 set -e
 
 echo "🏗️ Installing Python Dependencies..."
-pip install -r requirements.txt
+pip install --no-cache-dir -r requirements.txt
 
-echo "🌍 Installing Playwright & Browsers..."
-npx playwright install --with-deps chromium
+echo "🌍 Installing Playwright Dependencies..."
+playwright install --with-deps chromium
 
 echo "🚀 Starting Gunicorn Server..."
 gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --timeout 120 --workers=1
