@@ -1,8 +1,11 @@
 #!/bin/bash
 set -e
 
-# Install Playwright Browsers
-playwright install --with-deps chromium
+echo "🏗️ Installing Python Dependencies..."
+pip install -r requirements.txt
 
-# Start Gunicorn Server (Increase Timeout)
+echo "🌍 Installing Playwright & Browsers..."
+npx playwright install --with-deps chromium
+
+echo "🚀 Starting Gunicorn Server..."
 gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --timeout 120 --workers=1
