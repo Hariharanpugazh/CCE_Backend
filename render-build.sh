@@ -8,4 +8,4 @@ echo "🌍 Installing Playwright Dependencies..."
 PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium
 
 echo "🚀 Starting Gunicorn Server..."
-gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --timeout 120 --workers=1
+gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT
