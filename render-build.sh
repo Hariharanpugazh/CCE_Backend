@@ -2,7 +2,9 @@
 set -e
 
 echo "🏗️ Installing Python Dependencies..."
-pip install --no-cache-dir -r requirements.txt
+pip install --upgrade pip
+pip install -r requirements.txt
+playwright install --with-deps
 
 echo "🌍 Installing Playwright Dependencies..."
 PLAYWRIGHT_BROWSERS_PATH=0 playwright install chromium

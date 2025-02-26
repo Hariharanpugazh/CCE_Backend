@@ -90,7 +90,9 @@ def fetch_jobs_api(request):
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.google.com/"
+    "Referer": "https://www.google.com/",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive"
 }
 
 def scrape_naukri_jobs(request):
@@ -107,7 +109,10 @@ def scrape_naukri_jobs(request):
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch( headless=True, args=["--no-sandbox", "--disable-gpu"])  # Set to False for debugging
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.set_extra_http_headers(HEADERS)
+            page.goto("https://www.naukri.com/")
             context = browser.new_context(
             user_agent=HEADERS["User-Agent"],
             extra_http_headers=HEADERS
