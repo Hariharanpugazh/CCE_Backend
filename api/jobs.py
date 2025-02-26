@@ -14,6 +14,8 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import time
+import os
+
 # MongoDB Connection
 client = MongoClient("mongodb+srv://ihub:ihub@cce.ksniz.mongodb.net/")
 db = client["CCE"]
@@ -94,19 +96,27 @@ def scrape_naukri_jobs(request):
     location_formatted = location.replace(" ", "-")
     naukri_url = f"https://www.naukri.com/{query_formatted}-jobs-in-{location_formatted}"
 
-    # Selenium Chrome Options
+    # **Configure Chrome for Render Deployment**
     chrome_options = Options()
-    chrome_options.add_argument("--headless")  # Run without UI
+    chrome_options.add_argument("--headless")  # Run without UI (mandatory for Render)
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # Avoid detection
-    chrome_options.add_argument("start-maximized")
-    chrome_options.add_argument("disable-infobars")
-    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--no-sandbox")  # Required for Render
+    chrome_options.add_argument("--disable-dev-shm-usage")  # Fix crashes in cloud
+    chrome_options.add_argument("--remote-debugging-port=9222")  # Debugging
+    chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # Bypass bot detection
     chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
 
-    # Start WebDriver
-    driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=chrome_options)
+    # **Check if running on Render**
+    if "RENDER" in os.environ:
+        chrome_path = "/usr/bin/google-chrome"
+        driver_path = "/usr/bin/chromedriver"
+        chrome_options.binary_location = chrome_path
+        service = Service(driver_path)
+    else:
+        service = Service(ChromeDriverManager().install())
+
+    # **Start WebDriver**
+    driver = webdriver.Chrome(service=service, options=chrome_options)
     driver.get(naukri_url)
 
     # **Wait Until Jobs Are Fully Loaded**
@@ -117,87 +127,65 @@ def scrape_naukri_jobs(request):
         return JsonResponse({"message": "Failed to load Naukri jobs!", "jobs": []}, status=500)
 
     jobs = []
-
     try:
-        # **Parent Job Container**
+        # **Find Job Listings**
         job_cards = driver.find_elements(By.CLASS_NAME, "srp-jobtuple-wrapper")
-
         if not job_cards:
             return JsonResponse({"message": "No jobs found on Naukri!", "jobs": []}, status=200)
 
         for job in job_cards:
             try:
                 # **Extract Job Title & Link**
-                try:
-                    title_element = job.find_element(By.XPATH, ".//h2/a")
-                    title = title_element.text.strip()
-                    job_link = title_element.get_attribute("href")
-                except:
-                    title, job_link = "N/A", "N/A"
+                title = job.find_element(By.XPATH, ".//h2/a").text.strip()
+                job_link = job.find_element(By.XPATH, ".//h2/a").get_attribute("href")
 
                 # **Extract Company Name**
                 try:
-                    company_element = job.find_element(By.XPATH, ".//span/a[contains(@class, 'comp-name')]")
-                    company_name = company_element.text.strip()
+                    company_name = job.find_element(By.XPATH, ".//span/a[contains(@class, 'comp-name')]").text.strip()
                 except:
                     company_name = "Not Available"
 
                 # **Extract Experience**
                 try:
-                    experience_element = job.find_element(By.XPATH, ".//span[contains(@class, 'exp')]")
-                    experience = experience_element.text.strip()
+                    experience = job.find_element(By.XPATH, ".//span[contains(@class, 'exp')]").text.strip()
                 except:
                     experience = "N/A"
 
                 # **Extract Salary**
                 try:
-                    salary_element = job.find_element(By.XPATH, ".//span[contains(@class, 'salary')]")
-                    salary_range = salary_element.text.strip()
+                    salary_range = job.find_element(By.XPATH, ".//span[contains(@class, 'salary')]").text.strip()
                 except:
                     salary_range = "N/A"
 
                 # **Extract Location**
                 try:
-                    location_element = job.find_element(By.XPATH, ".//span[contains(@class, 'location')]")
-                    job_location = location_element.text.strip()
+                    job_location = job.find_element(By.XPATH, ".//span[contains(@class, 'location')]").text.strip()
                 except:
                     job_location = "Not Specified"
 
-                # **Extract Required Skills (As List)**
+                # **Extract Skills**
                 try:
                     skills_elements = job.find_elements(By.XPATH, ".//ul[contains(@class, 'tags-gt')]/li")
                     required_skills = [skill.text.strip() for skill in skills_elements if skill.text.strip()]
                 except:
                     required_skills = []
 
-                # **Extract Job Description / Requirements**
+                # **Extract Job Description**
                 try:
-                    desc_element = job.find_element(By.XPATH, ".//span[contains(@class, 'desc')]")
-                    job_description = desc_element.text.strip()
+                    job_description = job.find_element(By.XPATH, ".//span[contains(@class, 'desc')]").text.strip()
                 except:
                     job_description = "N/A"
 
-                # **Formatted Job Data**
+                # **Format Job Data**
                 formatted_job = {
                     "title": title,
                     "job_data": {
                         "company_name": company_name,
-                        "company_overview": None,  # Not available on listing page
-                        "company_website": None,
                         "job_description": job_description,
-                        "key_responsibilities": None,  # No separate field
                         "required_skills": required_skills,
-                        "education_requirements": None,  # No separate field
                         "experience_level": experience,
                         "salary_range": salary_range,
-                        "benefits": None,  # No separate field
                         "job_location": job_location,
-                        "work_type": "",
-                        "work_schedule": "N/A",
-                        "application_instructions": None,
-                        "application_deadline": None,
-                        "contact_email": None,
-                        "contact_phone": None,
                         "job_link": job_link,
                         "selectedCategory": "IT & Development",
                         "selectedWorkType": "Full-time"
