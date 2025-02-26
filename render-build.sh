@@ -8,8 +8,8 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 echo "Installing Playwright and browsers..."
-playwright install --with-deps chromium firefox webkit || true  # No root access required
+playwright install chromium firefox webkit --with-deps || true  # No root access required
 
 # Start Gunicorn server
 echo "Starting Gunicorn server..."
-gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --timeout 120
+gunicorn backend.wsgi:application --bind 0.0.0.0:$PORT --timeout 300 --workers=3
