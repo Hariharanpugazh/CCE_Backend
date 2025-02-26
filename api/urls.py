@@ -2,6 +2,7 @@ from django.urls import path
 from .views import *
 from .admin_views import *
 from .message import * 
+from .jobs import *
 
 urlpatterns = [
   
@@ -134,4 +135,9 @@ urlpatterns = [
 
     #view count
      path('viewcount/<str:id>/', view_count, name='view_count'),
+
+     #Jobs
+    path('fetch-jobs-api/', fetch_jobs_api, name='fetch-jobs-api'),
+    path('scrape-naukri-jobs/', scrape_naukri_jobs, name='scrape-indeed-jobs'),
+    path('search-jobs/', search_jobs, name='search-jobs'),
 ]

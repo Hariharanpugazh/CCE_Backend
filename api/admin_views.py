@@ -941,49 +941,27 @@ def get_jobs_for_mail(request):
     except Exception as e:
         return JsonResponse({"error": str(e)}, status=500)
  
-def get_jwt_token(request):
-    """Retrieve and decode JWT token from Authorization header."""
-    auth_header = request.headers.get('Authorization')
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return None, JsonResponse({'error': 'No token provided'}, status=401)
-    
-    jwt_token = auth_header.split(" ")[1]
-    try:
-        decoded_token = jwt.decode(jwt_token, JWT_SECRET, algorithms=["HS256"])
-        return decoded_token, None
-    except jwt.ExpiredSignatureError:
-        return None, JsonResponse({'error': 'JWT token has expired'}, status=401)
-    except jwt.InvalidTokenError as e:
-        return None, JsonResponse({'error': f'Invalid JWT token: {str(e)}'}, status=401)
-
 @csrf_exempt
 @api_view(["POST"])
 def toggle_auto_approval(request):
     """
     API to enable or disable auto-approval.
     """
-    decoded_token, error_response = get_jwt_token(request)
-    if error_response:
-        return error_response
-    
-    superadmin_user = decoded_token.get('superadmin_user')  # Extract superadmin_user from token
-    if not superadmin_user:
-        return JsonResponse({'error': 'Unauthorized access'}, status=403)
-    
     try:
         data = json.loads(request.body)
         is_auto_approval = data.get("is_auto_approval", False)  # Default is False
 
         # Save or update the setting in MongoDB
         superadmin_collection.update_one(
-            {"admin_id": superadmin_user},  # Ensuring it updates per superadmin user
+            {"key": "auto_approval"},
             {"$set": {"value": is_auto_approval}},
             upsert=True
         )
 
         return JsonResponse({"message": "Auto-approval setting updated successfully"}, status=200)
+
     except Exception as e:
-        return JsonResponse({'error': f'Error in updating auto-approval: {str(e)}'}, status=500)
+        return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
 @api_view(["GET"])
@@ -991,20 +969,12 @@ def get_auto_approval_status(request):
     """
     API to check if auto-approval is enabled.
     """
-    decoded_token, error_response = get_jwt_token(request)
-    if error_response:
-        return error_response
-    
-    superadmin_user = decoded_token.get('superadmin_user')  # Extract superadmin_user from token
-    if not superadmin_user:
-        return JsonResponse({'error': 'Unauthorized access'}, status=403)
-    
     try:
-        auto_approval_setting = superadmin_collection.find_one({"admin_id": superadmin_user})
+        auto_approval_setting = superadmin_collection.find_one({"key": "auto_approval"})
         is_auto_approval = auto_approval_setting.get("value", False) if auto_approval_setting else False
         return JsonResponse({"is_auto_approval": is_auto_approval}, status=200)
     except Exception as e:
-        return JsonResponse({'error': f'Error fetching auto-approval status: {str(e)}'}, status=500)
+        return JsonResponse({"error": str(e)}, status=500)
 
 @csrf_exempt
 def review_job(request, job_id):
