@@ -15,6 +15,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 import time
 import os
+from playwright.sync_api import sync_playwright
 
 # MongoDB Connection
 client = MongoClient("mongodb+srv://ihub:ihub@cce.ksniz.mongodb.net/")
@@ -85,131 +86,166 @@ def fetch_jobs_api(request):
     except requests.exceptions.RequestException as e:
         return JsonResponse({"error": f"API request failed: {str(e)}"}, status=500)
 
-def scrape_naukri_jobs(request):
-    """Scrape jobs from Naukri and store in MongoDB"""
+def test_playwright_scraping():
+    """Test if Playwright can fetch job listings from Naukri"""
 
-    query = request.GET.get("query", "Software Developer")
-    location = request.GET.get("location", "India")
+    query = "Frontend Developer"
+    location = "Chennai"
 
-    # Format query for URL
     query_formatted = query.replace(" ", "-")
     location_formatted = location.replace(" ", "-")
     naukri_url = f"https://www.naukri.com/{query_formatted}-jobs-in-{location_formatted}"
 
-    # **Configure Chrome for Render Deployment**
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")  # Run without UI (mandatory for Render)
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--no-sandbox")  # Required for Render
-    chrome_options.add_argument("--disable-dev-shm-usage")  # Fix crashes in cloud
-    chrome_options.add_argument("--remote-debugging-port=9222")  # Debugging
-    chrome_options.add_argument("--disable-blink-features=AutomationControlled")  # Bypass bot detection
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)")
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=False)  # Set headless=False for debugging
+        page = browser.new_page()
+        page.goto(naukri_url, timeout=60000)
 
-    # **Check if running on Render**
-    if "RENDER" in os.environ:
-        chrome_path = "/usr/bin/google-chrome"
-        driver_path = "/usr/bin/chromedriver"
-        chrome_options.binary_location = chrome_path
-        service = Service(driver_path)
-    else:
-        service = Service(ChromeDriverManager().install())
+        job_cards = page.query_selector_all(".srp-jobtuple-wrapper")
 
-    # **Start WebDriver**
-    driver = webdriver.Chrome(service=service, options=chrome_options)
-    driver.get(naukri_url)
-
-    # **Wait Until Jobs Are Fully Loaded**
-    try:
-        WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.CLASS_NAME, "srp-jobtuple-wrapper")))
-    except:
-        driver.quit()
-        return JsonResponse({"message": "Failed to load Naukri jobs!", "jobs": []}, status=500)
-
-    jobs = []
-    try:
-        # **Find Job Listings**
-        job_cards = driver.find_elements(By.CLASS_NAME, "srp-jobtuple-wrapper")
         if not job_cards:
-            return JsonResponse({"message": "No jobs found on Naukri!", "jobs": []}, status=200)
+            print("No job cards found!")
+            return
 
-        for job in job_cards:
+        for job in job_cards[:5]:  # Test with first 5 jobs
             try:
-                # **Extract Job Title & Link**
-                title = job.find_element(By.XPATH, ".//h2/a").text.strip()
-                job_link = job.find_element(By.XPATH, ".//h2/a").get_attribute("href")
+                title = job.query_selector("h2 a").inner_text().strip()
+                job_link = job.query_selector("h2 a").get_attribute("href")
+                company_name = job.query_selector("span a.comp-name").inner_text().strip()
 
-                # **Extract Company Name**
-                try:
-                    company_name = job.find_element(By.XPATH, ".//span/a[contains(@class, 'comp-name')]").text.strip()
-                except:
-                    company_name = "Not Available"
-
-                # **Extract Experience**
-                try:
-                    experience = job.find_element(By.XPATH, ".//span[contains(@class, 'exp')]").text.strip()
-                except:
-                    experience = "N/A"
-
-                # **Extract Salary**
-                try:
-                    salary_range = job.find_element(By.XPATH, ".//span[contains(@class, 'salary')]").text.strip()
-                except:
-                    salary_range = "N/A"
-
-                # **Extract Location**
-                try:
-                    job_location = job.find_element(By.XPATH, ".//span[contains(@class, 'location')]").text.strip()
-                except:
-                    job_location = "Not Specified"
-
-                # **Extract Skills**
-                try:
-                    skills_elements = job.find_elements(By.XPATH, ".//ul[contains(@class, 'tags-gt')]/li")
-                    required_skills = [skill.text.strip() for skill in skills_elements if skill.text.strip()]
-                except:
-                    required_skills = []
-
-                # **Extract Job Description**
-                try:
-                    job_description = job.find_element(By.XPATH, ".//span[contains(@class, 'desc')]").text.strip()
-                except:
-                    job_description = "N/A"
-
-                # **Format Job Data**
-                formatted_job = {
-                    "title": title,
-                    "job_data": {
-                        "company_name": company_name,
-                        "job_description": job_description,
-                        "required_skills": required_skills,
-                        "experience_level": experience,
-                        "salary_range": salary_range,
-                        "job_location": job_location,
-                        "job_link": job_link,
-                        "selectedCategory": "IT & Development",
-                        "selectedWorkType": "Full-time"
-                    },
-                    "is_publish": True,
-                    "status": "Active",
-                    "updated_at": datetime.utcnow().isoformat(),
-                    "edited": "superadmin"
-                }
-
-                # **Store in MongoDB**
-                db.scraped_jobs.update_one(
-                    {"job_link": job_link},
-                    {"$set": formatted_job},
-                    upsert=True
-                )
-
-                jobs.append(formatted_job)
+                print("\nJob Found:")
+                print(f"Title: {title}")
+                print(f"Company: {company_name}")
+                print(f"Link: {job_link}")
 
             except Exception as e:
                 print(f"Error extracting job: {e}")
 
-    finally:
-        driver.quit()  # Close browser
+        browser.close()
+
+# Run the test
+test_playwright_scraping()
+
+# **Custom Headers (Looks Like a Real Browser)**
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.google.com/"
+}
+
+def scrape_naukri_jobs(request):
+    """Scrape jobs from Naukri using Playwright (Bypass Block)"""
+
+    query = request.GET.get("query", "Software Developer")
+    location = request.GET.get("location", "India")
+
+    query_formatted = query.replace(" ", "-")
+    location_formatted = location.replace(" ", "-")
+    naukri_url = f"https://www.naukri.com/{query_formatted}-jobs-in-{location_formatted}"
+
+    jobs = []
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)  # Set to False for debugging
+            context = browser.new_context(
+                user_agent=HEADERS["User-Agent"],
+                extra_http_headers=HEADERS
+            )
+            page = context.new_page()
+            
+            print(f"🔗 Visiting: {naukri_url}")
+            page.goto(naukri_url, timeout=60000)
+
+            # **Ensure Page is Fully Loaded**
+            page.wait_for_load_state("networkidle")
+            time.sleep(5)  # Allow page to load completely
+            
+            # **Check for Access Denied**
+            if "Access Denied" in page.content():
+                print("❌ Access Denied! Bypassing Required.")
+                return JsonResponse({"message": "Access Denied by Naukri!", "jobs": []}, status=403)
+
+            # **Scroll Down to Load More Jobs**
+            for _ in range(3):
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                time.sleep(2)
+
+            # **Wait Until Job Elements are Visible**
+            try:
+                page.wait_for_selector(".srp-jobtuple-wrapper", timeout=30000)
+            except:
+                print("⚠️ No job listings found. Printing Page Source for Debugging:")
+                print(page.content())  # Debugging: Check if Naukri is blocking
+                return JsonResponse({"message": "No jobs found!", "jobs": []}, status=200)
+
+            job_cards = page.query_selector_all(".srp-jobtuple-wrapper")
+
+            if not job_cards:
+                return JsonResponse({"message": "No jobs found!", "jobs": []}, status=200)
+
+            for job in job_cards:
+                try:
+                    # **Extract Job Details**
+                    title_element = job.query_selector("h2 a")
+                    title = title_element.inner_text().strip() if title_element else "N/A"
+                    job_link = title_element.get_attribute("href") if title_element else "N/A"
+
+                    company_element = job.query_selector("span a.comp-name")
+                    company_name = company_element.inner_text().strip() if company_element else "Not Available"
+
+                    experience_element = job.query_selector("span.exp")
+                    experience = experience_element.inner_text().strip() if experience_element else "N/A"
+
+                    salary_element = job.query_selector("div:nth-child(3) div span:nth-child(2) span span")
+                    salary_range = salary_element.inner_text().strip() if salary_element else "N/A"
+
+                    location_element = job.query_selector("div:nth-child(1) div:nth-child(3) div span:nth-child(3) span span")
+                    job_location = location_element.inner_text().strip() if location_element else "Not Specified"
+
+                    skills_elements = job.query_selector_all("ul.tags-gt li")
+                    required_skills = [skill.inner_text().strip() for skill in skills_elements if skill.inner_text().strip()]
+
+                    desc_element = job.query_selector("span.job-desc.ni-job-tuple-icon.ni-job-tuple-icon-srp-description")
+                    job_description = desc_element.inner_text().strip() if desc_element else "N/A"
+
+                    # **Formatted Job Data**
+                    formatted_job = {
+                        "title": title,
+                        "job_data": {
+                            "company_name": company_name,
+                            "job_description": job_description,
+                            "required_skills": required_skills,
+                            "experience_level": experience,
+                            "salary_range": salary_range,
+                            "job_location": job_location,
+                            "job_link": job_link,
+                            "selectedCategory": "IT & Development",
+                            "selectedWorkType": "Full-time"
+                        },
+                        "is_publish": True,
+                        "status": "Active",
+                        "updated_at": datetime.utcnow().isoformat(),
+                        "edited": "superadmin"
+                    }
+
+                    # **Store in MongoDB**
+                    db.scraped_jobs.update_one(
+                        {"job_link": job_link},
+                        {"$set": formatted_job},
+                        upsert=True
+                    )
+
+                    jobs.append(formatted_job)
+
+                except Exception as e:
+                    print(f"⚠️ Error extracting job: {e}")
+
+            browser.close()
+
+    except Exception as e:
+        print(f"🔥 Playwright Error: {e}")
+        return JsonResponse({"message": "Playwright failed!", "error": str(e)}, status=500)
 
     return JsonResponse({"message": "Naukri jobs scraped and stored successfully!", "jobs": jobs}, status=200)
 

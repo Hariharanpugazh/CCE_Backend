@@ -55,3 +55,4 @@ urllib3==2.3.0
 selenium
 webdriver_manager
 nltk
+playwright
