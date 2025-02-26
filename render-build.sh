@@ -6,16 +6,18 @@ set -e
 echo "Installing dependencies..."
 pip install -r requirements.txt  
 
-# Install Playwright without requiring root access
+# Install Playwright without unsupported flags
 echo "Installing Playwright..."
-playwright install --with-deps --single-process  
+playwright install --with-deps  
 
-# Start the Django application
+# Apply database migrations
 echo "Running migrations..."
 python manage.py migrate  
 
+# Collect static files
 echo "Collecting static files..."
 python manage.py collectstatic --noinput  
 
+# Start the Gunicorn server
 echo "Starting Gunicorn server..."
 gunicorn backend.wsgi:application --bind 0.0.0.0:8000  
